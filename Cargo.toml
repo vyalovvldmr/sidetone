@@ -10,3 +10,4 @@ clap = { version = "4.0", features = ["derive"] }
 cpal = "0.15.3"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 tracing = "0.1.41"
+ctrlc = "3.4.5"

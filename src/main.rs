@@ -22,6 +22,14 @@ struct Opt {
     output_device: String,
 }
 
+fn serve() -> anyhow::Result<()> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    ctrlc::set_handler(move || tx.send(()).expect("could not send signal on channel"))
+        .context("could not set ctrl-c handler")?;
+    rx.recv()?;
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -109,10 +117,7 @@ fn main() -> anyhow::Result<()> {
     input_stream.play()?;
     output_stream.play()?;
 
-    // Run for 15 seconds before closing.
-    info!("Playing for 15 seconds... ");
-    std::thread::sleep(std::time::Duration::from_secs(15));
-    info!("Done!");
+    serve()?;
     Ok(())
 }
 
