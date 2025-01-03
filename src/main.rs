@@ -5,6 +5,10 @@ use ringbuf::{
     traits::{Consumer, Producer, Split},
     HeapRb,
 };
+use tracing::{debug, info, level_filters::LevelFilter};
+use tracing_subscriber::EnvFilter;
+
+const LATENCY: std::time::Duration = std::time::Duration::from_millis(6);
 
 #[derive(Parser, Debug)]
 #[command(version, about = "sidetone", long_about = None)]
@@ -16,17 +20,19 @@ struct Opt {
     /// The output audio device to use
     #[arg(short, long, value_name = "OUT", default_value_t = String::from("default"))]
     output_device: String,
-
-    /// Specify the delay between input and output
-    #[arg(short, long, value_name = "DELAY_MS", default_value_t = 6.0)]
-    latency: f32,
 }
 
 fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::builder()
+                .with_default_directive(LevelFilter::INFO.into())
+                .from_env()?,
+        )
+        .init();
     let opt = Opt::parse();
     let host = cpal::default_host();
 
-    // Find devices.
     let input_device = if opt.input_device == "default" {
         host.default_input_device()
     } else {
@@ -43,17 +49,14 @@ fn main() -> anyhow::Result<()> {
     }
     .context("failed to find output device")?;
 
-    println!("Using input device: \"{}\"", input_device.name()?);
-    println!("Using output device: \"{}\"", output_device.name()?);
+    info!("Using input device: \"{}\"", input_device.name()?);
+    info!("Using output device: \"{}\"", output_device.name()?);
 
-    // We'll try and use the same configuration between streams to keep it simple.
     let config: cpal::StreamConfig = input_device.default_input_config()?.into();
 
-    // Create a delay in case the input and output devices aren't synced.
-    let latency_frames = (opt.latency / 1_000.0) * config.sample_rate.0 as f32;
+    let latency_frames = (LATENCY.as_millis() as f32 / 1_000.0) * config.sample_rate.0 as f32;
     let latency_samples = latency_frames as usize * config.channels as usize;
 
-    // The buffer to share samples
     let ring = HeapRb::<f32>::new(latency_samples * 2);
     let (mut producer, mut consumer) = ring.split();
 
@@ -72,7 +75,7 @@ fn main() -> anyhow::Result<()> {
             }
         }
         if output_fell_behind {
-            eprintln!("output stream fell behind: try increasing latency");
+            debug!("output stream fell behind: try increasing latency");
         }
     };
 
@@ -88,31 +91,28 @@ fn main() -> anyhow::Result<()> {
             };
         }
         if input_fell_behind {
-            eprintln!("input stream fell behind: try increasing latency");
+            debug!("input stream fell behind: try increasing latency");
         }
     };
 
     // Build streams.
-    println!(
+    debug!(
         "Attempting to build both streams with f32 samples and `{:?}`.",
         config
     );
     let input_stream = input_device.build_input_stream(&config, input_data_fn, err_fn, None)?;
     let output_stream = output_device.build_output_stream(&config, output_data_fn, err_fn, None)?;
-    println!("Successfully built streams.");
+    info!("Successfully built streams.");
 
     // Play the streams.
-    println!(
-        "Starting the input and output streams with `{}` milliseconds of latency.",
-        opt.latency
-    );
+    info!("Starting the input and output streams.");
     input_stream.play()?;
     output_stream.play()?;
 
     // Run for 15 seconds before closing.
-    println!("Playing for 15 seconds... ");
+    info!("Playing for 15 seconds... ");
     std::thread::sleep(std::time::Duration::from_secs(15));
-    println!("Done!");
+    info!("Done!");
     Ok(())
 }
 
