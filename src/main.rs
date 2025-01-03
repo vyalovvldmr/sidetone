@@ -5,7 +5,7 @@ use ringbuf::{
     traits::{Consumer, Producer, Split},
     HeapRb,
 };
-use tracing::{debug, info, level_filters::LevelFilter};
+use tracing::{debug, error, info, level_filters::LevelFilter};
 use tracing_subscriber::EnvFilter;
 
 const LATENCY: std::time::Duration = std::time::Duration::from_millis(6);
@@ -117,5 +117,5 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn err_fn(err: cpal::StreamError) {
-    eprintln!("an error occurred on stream: {}", err);
+    error!("an error occurred on stream: {}", err);
 }
