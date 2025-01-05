@@ -38,8 +38,12 @@ fn init_logging() -> anyhow::Result<()> {
 
 fn serve() -> anyhow::Result<()> {
     let (tx, rx) = std::sync::mpsc::channel();
-    ctrlc::set_handler(move || tx.send(()).expect("could not send signal on channel"))
-        .context("could not set ctrl-c handler")?;
+    ctrlc::set_handler(move || {
+        if tx.send(()).is_err() {
+            error!("could not send ctrl-c signal on channel")
+        }
+    })
+    .context("could not set ctrl-c handler")?;
     rx.recv()?;
     Ok(())
 }
@@ -79,11 +83,8 @@ fn main() -> anyhow::Result<()> {
     let ring = HeapRb::<f32>::new(latency_samples * 2);
     let (mut producer, mut consumer) = ring.split();
 
-    // Fill the samples with 0.0 equal to the length of the delay.
     for _ in 0..latency_samples {
-        // The ring buffer has twice as much space as necessary to add latency here,
-        // so this should never fail
-        producer.try_push(0.0).unwrap();
+        producer.try_push(0.0).ok();
     }
 
     let input_data_fn = move |data: &[f32], _: &cpal::InputCallbackInfo| {
