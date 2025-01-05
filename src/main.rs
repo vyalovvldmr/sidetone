@@ -73,6 +73,7 @@ fn main() -> anyhow::Result<()> {
     let output_device =
         find_output_device(&args.output_device, &host).context("failed to find output device")?;
     let config: cpal::StreamConfig = input_device.default_input_config()?.into();
+    debug!("input device config {:#?}", &config);
     let latency_frames = (LATENCY.as_millis() as f32 / 1_000.0) * config.sample_rate.0 as f32;
     let latency_samples = latency_frames as usize * config.channels as usize;
     let ring = HeapRb::<f32>::new(latency_samples * 2);
