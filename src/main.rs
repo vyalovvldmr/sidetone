@@ -11,7 +11,7 @@ use ringbuf::{
 use tracing::{debug, error, info, level_filters::LevelFilter};
 use tracing_subscriber::EnvFilter;
 
-const LATENCY: std::time::Duration = std::time::Duration::from_millis(6);
+const LATENCY: std::time::Duration = std::time::Duration::from_millis(11);
 
 #[derive(Parser, Debug)]
 #[command(version, about = "sidetone", long_about = None)]
@@ -80,7 +80,7 @@ fn main() -> anyhow::Result<()> {
     debug!("input device config {:#?}", &config);
     let latency_frames = (LATENCY.as_millis() as f32 / 1_000.0) * config.sample_rate.0 as f32;
     let latency_samples = latency_frames as usize * config.channels as usize;
-    let ring = HeapRb::<f32>::new(latency_samples * 2);
+    let ring = HeapRb::<f32>::new(latency_samples);
     let (mut producer, mut consumer) = ring.split();
 
     for _ in 0..latency_samples {
