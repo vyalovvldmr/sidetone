@@ -76,10 +76,15 @@ fn main() -> anyhow::Result<()> {
         find_input_device(&args.input_device, &host).context("failed to find input device")?;
     let output_device =
         find_output_device(&args.output_device, &host).context("failed to find output device")?;
-    let config: cpal::StreamConfig = input_device.default_input_config()?.into();
-    debug!("input device config {:#?}", &config);
-    let latency_frames = (LATENCY.as_millis() as f32 / 1_000.0) * config.sample_rate.0 as f32;
-    let latency_samples = latency_frames as usize * config.channels as usize;
+    let input_config: cpal::StreamConfig = input_device.default_input_config()?.into();
+    debug!("input device config {:#?}", &input_config);
+    let output_config: cpal::StreamConfig = output_device.default_output_config()?.into();
+    debug!("output device config {:#?}", &output_config);
+    if input_config.sample_rate.0 != output_config.sample_rate.0 {
+        anyhow::bail!("The sampling frequency of the input device must be the same as the sampling frequency of the output device");
+    }
+    let latency_frames = (LATENCY.as_millis() as f32 / 1_000.0) * input_config.sample_rate.0 as f32;
+    let latency_samples = latency_frames as usize * input_config.channels as usize;
     let ring = HeapRb::<f32>::new(latency_samples);
     let (mut producer, mut consumer) = ring.split();
 
@@ -124,8 +129,10 @@ fn main() -> anyhow::Result<()> {
         input_device.name()?,
         output_device.name()?
     );
-    let input_stream = input_device.build_input_stream(&config, input_data_fn, err_fn, None)?;
-    let output_stream = output_device.build_output_stream(&config, output_data_fn, err_fn, None)?;
+    let input_stream =
+        input_device.build_input_stream(&input_config, input_data_fn, err_fn, None)?;
+    let output_stream =
+        output_device.build_output_stream(&input_config, output_data_fn, err_fn, None)?;
     input_stream.play()?;
     output_stream.play()?;
 
