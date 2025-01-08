@@ -4,10 +4,7 @@ use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
     Device, Host,
 };
-use ringbuf::{
-    traits::{Consumer, Producer, Split},
-    HeapRb,
-};
+use crossbeam_channel::{bounded, Receiver, Sender};
 use tracing::{debug, error, info, level_filters::LevelFilter};
 use tracing_subscriber::EnvFilter;
 
@@ -85,17 +82,16 @@ fn main() -> anyhow::Result<()> {
     }
     let latency_frames = (LATENCY.as_millis() as f32 / 1_000.0) * input_config.sample_rate.0 as f32;
     let latency_samples = latency_frames as usize * input_config.channels as usize;
-    let ring = HeapRb::<f32>::new(latency_samples);
-    let (mut producer, mut consumer) = ring.split();
+    let (sender, receiver): (Sender<f32>, Receiver<f32>) = bounded(550);
 
     for _ in 0..latency_samples {
-        producer.try_push(0.0).ok();
+        sender.try_send(0.0).ok();
     }
 
     let input_data_fn = move |data: &[f32], _: &cpal::InputCallbackInfo| {
         let mut output_fell_behind = false;
         for &sample in data {
-            if producer.try_push(sample).is_err() {
+            if sender.try_send(sample).is_err() {
                 output_fell_behind = true;
             }
         }
@@ -107,9 +103,9 @@ fn main() -> anyhow::Result<()> {
     let output_data_fn = move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
         let mut input_fell_behind = false;
         for sample in data {
-            *sample = match consumer.try_pop() {
-                Some(s) => s,
-                None => {
+            *sample = match receiver.try_recv() {
+                Ok(s) => s,
+                _ => {
                     input_fell_behind = true;
                     0.0
                 }
