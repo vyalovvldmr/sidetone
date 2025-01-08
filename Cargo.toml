@@ -11,6 +11,8 @@ cpal = "0.15.3"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 tracing = "0.1.41"
 ctrlc = "3.4.5"
+fundsp = { version = "0.20.0", default-features = false, features = ["std"] }
+crossbeam-channel = "0.5.14"
 
 [lints.clippy]
 panic = "warn"

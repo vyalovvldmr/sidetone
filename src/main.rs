@@ -1,141 +1,146 @@
-use anyhow::Context;
-use clap::Parser;
-use cpal::{
-    traits::{DeviceTrait, HostTrait, StreamTrait},
-    Device, Host,
-};
-use ringbuf::{
-    traits::{Consumer, Producer, Split},
-    HeapRb,
-};
-use tracing::{debug, error, info, level_filters::LevelFilter};
-use tracing_subscriber::EnvFilter;
+//! Process (stereo) input and play the result (in stereo).
 
-const LATENCY: std::time::Duration = std::time::Duration::from_millis(11);
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::{FromSample, SizedSample};
+use fundsp::hacker32::*;
 
-#[derive(Parser, Debug)]
-#[command(version, about = "sidetone", long_about = None)]
-struct Cli {
-    /// The input audio device to use
-    #[arg(short, long, value_name = "IN", default_value_t = String::from("default"))]
-    input_device: String,
+use crossbeam_channel::{bounded, Receiver, Sender};
 
-    /// The output audio device to use
-    #[arg(short, long, value_name = "OUT", default_value_t = String::from("default"))]
-    output_device: String,
+#[derive(Clone)]
+pub struct InputNode {
+    receiver: Receiver<(f32, f32)>,
 }
 
-fn init_logging() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::builder()
-                .with_default_directive(LevelFilter::INFO.into())
-                .from_env()?,
-        )
-        .init();
-    Ok(())
-}
-
-fn serve() -> anyhow::Result<()> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    ctrlc::set_handler(move || {
-        if tx.send(()).is_err() {
-            error!("could not send ctrl-c signal on channel")
-        }
-    })
-    .context("could not set ctrl-c handler")?;
-    rx.recv()?;
-    Ok(())
-}
-
-fn find_input_device(device_name: &str, host: &Host) -> Option<Device> {
-    if device_name == "default" {
-        host.default_input_device()
-    } else {
-        host.input_devices()
-            .ok()?
-            .find(|x| x.name().map(|y| y == device_name).unwrap_or(false))
+impl InputNode {
+    pub fn new(receiver: Receiver<(f32, f32)>) -> Self {
+        InputNode { receiver }
     }
 }
 
-fn find_output_device(device_name: &str, host: &Host) -> Option<Device> {
-    if device_name == "default" {
-        host.default_output_device()
-    } else {
-        host.output_devices()
-            .ok()?
-            .find(|x| x.name().map(|y| y == device_name).unwrap_or(false))
+impl AudioNode for InputNode {
+    const ID: u64 = 87;
+    type Inputs = U0;
+    type Outputs = U2;
+
+    #[inline]
+    fn tick(&mut self, _input: &Frame<f32, Self::Inputs>) -> Frame<f32, Self::Outputs> {
+        let (left, right) = self.receiver.try_recv().unwrap_or((0.0, 0.0));
+        [left, right].into()
     }
 }
 
-fn main() -> anyhow::Result<()> {
-    init_logging()?;
-    let args = Cli::parse();
+fn main() {
+    // Sender / receiver for left and right channels (stereo mic).
+    let (sender, receiver) = bounded(540);
+
     let host = cpal::default_host();
-    let input_device =
-        find_input_device(&args.input_device, &host).context("failed to find input device")?;
-    let output_device =
-        find_output_device(&args.output_device, &host).context("failed to find output device")?;
-    let input_config: cpal::StreamConfig = input_device.default_input_config()?.into();
-    debug!("input device config {:#?}", &input_config);
-    let output_config: cpal::StreamConfig = output_device.default_output_config()?.into();
-    debug!("output device config {:#?}", &output_config);
-    if input_config.sample_rate.0 != output_config.sample_rate.0 {
-        anyhow::bail!("The sampling frequency of the input device must be the same as the sampling frequency of the output device");
+    // Start input.
+    let in_device = host.default_input_device().unwrap();
+    let in_config = in_device.default_input_config().unwrap();
+    match in_config.sample_format() {
+        cpal::SampleFormat::F32 => run_in::<f32>(&in_device, &in_config.into(), sender),
+        cpal::SampleFormat::I16 => run_in::<i16>(&in_device, &in_config.into(), sender),
+        cpal::SampleFormat::U16 => run_in::<u16>(&in_device, &in_config.into(), sender),
+        format => eprintln!("Unsupported sample format: {}", format),
     }
-    let latency_frames = (LATENCY.as_millis() as f32 / 1_000.0) * input_config.sample_rate.0 as f32;
-    let latency_samples = latency_frames as usize * input_config.channels as usize;
-    let ring = HeapRb::<f32>::new(latency_samples);
-    let (mut producer, mut consumer) = ring.split();
-
-    for _ in 0..latency_samples {
-        producer.try_push(0.0).ok();
+    // Start output.
+    let out_device = host.default_output_device().unwrap();
+    let out_config = out_device.default_output_config().unwrap();
+    match out_config.sample_format() {
+        cpal::SampleFormat::F32 => run_out::<f32>(&out_device, &out_config.into(), receiver),
+        cpal::SampleFormat::I16 => run_out::<i16>(&out_device, &out_config.into(), receiver),
+        cpal::SampleFormat::U16 => run_out::<u16>(&out_device, &out_config.into(), receiver),
+        format => eprintln!("Unsupported sample format: {}", format),
     }
+    println!("Processing stereo input to stereo output.");
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+}
 
-    let input_data_fn = move |data: &[f32], _: &cpal::InputCallbackInfo| {
-        let mut output_fell_behind = false;
-        for &sample in data {
-            if producer.try_push(sample).is_err() {
-                output_fell_behind = true;
+fn run_in<T>(device: &cpal::Device, config: &cpal::StreamConfig, sender: Sender<(f32, f32)>)
+where
+    T: SizedSample,
+    f32: FromSample<T>,
+{
+    let channels = config.channels as usize;
+    let err_fn = |err| eprintln!("an error occurred on stream: {}", err);
+    let stream = device.build_input_stream(
+        config,
+        move |data: &[T], _: &cpal::InputCallbackInfo| read_data(data, channels, sender.clone()),
+        err_fn,
+        None,
+    );
+    if let Ok(stream) = stream {
+        if let Ok(()) = stream.play() {
+            std::mem::forget(stream);
+        }
+    }
+    println!("Input stream built.");
+}
+
+fn read_data<T>(input: &[T], channels: usize, sender: Sender<(f32, f32)>)
+where
+    T: SizedSample,
+    f32: FromSample<T>,
+{
+    for frame in input.chunks(channels) {
+        if let Some(s) = frame.iter().next() {
+            let sample = s.to_sample::<f32>();
+
+            if let Ok(()) = sender.try_send((sample, sample)) {}
+        };
+    }
+}
+
+fn run_out<T>(device: &cpal::Device, config: &cpal::StreamConfig, receiver: Receiver<(f32, f32)>)
+where
+    T: SizedSample + FromSample<f32>,
+{
+    let channels = config.channels as usize;
+
+    let input = An(InputNode::new(receiver));
+    let reverb = reverb2_stereo(20.0, 3.0, 1.0, 0.2, highshelf_hz(1000.0, 1.0, db_amp(-1.0)));
+    let chorus = chorus(0, 0.0, 0.03, 0.2) | chorus(1, 0.0, 0.03, 0.2);
+    // Here is the final input-to-output processing chain.
+    let graph = input >> highpass_q(1.0);
+    let mut graph = BlockRateAdapter::new(Box::new(graph));
+    graph.set_sample_rate(config.sample_rate.0 as f64);
+
+    let mut next_value = move || graph.get_stereo();
+
+    let err_fn = |err| eprintln!("An error occurred on stream: {}", err);
+    let stream = device.build_output_stream(
+        config,
+        move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+            write_data(data, channels, &mut next_value)
+        },
+        err_fn,
+        None,
+    );
+    if let Ok(stream) = stream {
+        if let Ok(()) = stream.play() {
+            std::mem::forget(stream);
+        }
+    }
+    println!("Output stream built.");
+}
+
+fn write_data<T>(output: &mut [T], channels: usize, next_sample: &mut dyn FnMut() -> (f32, f32))
+where
+    T: SizedSample + FromSample<f32>,
+{
+    for frame in output.chunks_mut(channels) {
+        let sample = next_sample();
+        let left = T::from_sample(sample.0);
+        let right = T::from_sample(sample.1);
+
+        for (channel, sample) in frame.iter_mut().enumerate() {
+            if channel & 1 == 0 {
+                *sample = left;
+            } else {
+                *sample = right;
             }
         }
-        if output_fell_behind {
-            debug!("output stream fell behind: try increasing latency");
-        }
-    };
-
-    let output_data_fn = move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-        let mut input_fell_behind = false;
-        for sample in data {
-            *sample = match consumer.try_pop() {
-                Some(s) => s,
-                None => {
-                    input_fell_behind = true;
-                    0.0
-                }
-            };
-        }
-        if input_fell_behind {
-            debug!("input stream fell behind: try increasing latency");
-        }
-    };
-
-    let err_fn = |err: cpal::StreamError| {
-        error!("an error occurred on stream: {}", err);
-    };
-
-    info!(
-        "Redirecting audio stream from device '{}' to '{}'",
-        input_device.name()?,
-        output_device.name()?
-    );
-    let input_stream =
-        input_device.build_input_stream(&input_config, input_data_fn, err_fn, None)?;
-    let output_stream =
-        output_device.build_output_stream(&input_config, output_data_fn, err_fn, None)?;
-    input_stream.play()?;
-    output_stream.play()?;
-
-    serve()?;
-    Ok(())
+    }
 }
