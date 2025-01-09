@@ -10,12 +10,21 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-
+  build-on-mac:
     runs-on: macos-latest
-
     steps:
     - uses: actions/checkout@v4
+    - name: Build
+      run: cargo build --verbose
+
+  test-on-linux:
+    runs-on: ununtu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libasound2-dev
     - name: Build
       run: cargo build --verbose
     - name: Format
