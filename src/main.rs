@@ -4,11 +4,11 @@ use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
     Device, Host,
 };
-use crossbeam_channel::{bounded, Receiver, Sender};
+use std::sync::mpsc::sync_channel;
 use tracing::{debug, error, info, level_filters::LevelFilter};
 use tracing_subscriber::EnvFilter;
 
-const LATENCY: std::time::Duration = std::time::Duration::from_millis(11);
+const INITIAL_LATENCY: std::time::Duration = std::time::Duration::from_millis(1000);
 
 #[derive(Parser, Debug)]
 #[command(version, about = "sidetone", long_about = None)]
@@ -80,9 +80,10 @@ fn main() -> anyhow::Result<()> {
     if input_config.sample_rate.0 != output_config.sample_rate.0 {
         anyhow::bail!("The sampling frequency of the input device must be the same as the sampling frequency of the output device");
     }
-    let latency_frames = (LATENCY.as_millis() as f32 / 1_000.0) * input_config.sample_rate.0 as f32;
+    let latency_frames =
+        (INITIAL_LATENCY.as_millis() as f32 / 1_000.0) * input_config.sample_rate.0 as f32;
     let latency_samples = latency_frames as usize * input_config.channels as usize;
-    let (sender, receiver): (Sender<f32>, Receiver<f32>) = bounded(550);
+    let (sender, receiver) = sync_channel(550);
 
     for _ in 0..latency_samples {
         sender.try_send(0.0).ok();
@@ -127,6 +128,7 @@ fn main() -> anyhow::Result<()> {
     );
     let input_stream =
         input_device.build_input_stream(&input_config, input_data_fn, err_fn, None)?;
+    std::thread::sleep(INITIAL_LATENCY);
     let output_stream =
         output_device.build_output_stream(&input_config, output_data_fn, err_fn, None)?;
     input_stream.play()?;
