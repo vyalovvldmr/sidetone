@@ -81,8 +81,8 @@ fn main() -> anyhow::Result<()> {
     if input_config.sample_rate.0 != output_config.sample_rate.0 {
         anyhow::bail!("The sampling frequency of the input device must be the same as the sampling frequency of the output device");
     }
-    let latency_frames = (INITIAL_LATENCY.as_secs() as f32) * input_config.sample_rate.0 as f32;
-    let latency_samples = latency_frames as usize * input_config.channels as usize;
+    let latency_frames = (INITIAL_LATENCY.as_secs() as f32) * output_config.sample_rate.0 as f32;
+    let latency_samples = latency_frames as usize * output_config.channels as usize;
     let (sender, receiver) = sync_channel(BUFFER_SIZE);
 
     for _ in 0..latency_samples {
@@ -103,14 +103,14 @@ fn main() -> anyhow::Result<()> {
 
     let output_data_fn = move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
         let mut input_fell_behind = false;
-        for sample in data {
-            *sample = match receiver.try_recv() {
-                Ok(s) => s,
-                _ => {
-                    input_fell_behind = true;
-                    0.0
+        for frame in data.chunks_mut(output_config.channels as usize) {
+            if let Ok(_sample) = receiver.try_recv() {
+                for sample in frame.iter_mut() {
+                    *sample = _sample;
                 }
-            };
+            } else {
+                input_fell_behind = true;
+            }
         }
         if input_fell_behind {
             debug!("input stream fell behind: try increasing latency");
@@ -130,7 +130,7 @@ fn main() -> anyhow::Result<()> {
         input_device.build_input_stream(&input_config, input_data_fn, err_fn, None)?;
     std::thread::sleep(INITIAL_LATENCY);
     let output_stream =
-        output_device.build_output_stream(&input_config, output_data_fn, err_fn, None)?;
+        output_device.build_output_stream(&output_config, output_data_fn, err_fn, None)?;
     input_stream.play()?;
     output_stream.play()?;
 
